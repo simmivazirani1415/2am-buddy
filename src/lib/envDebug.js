@@ -6,7 +6,7 @@
 // [2am-debug] output before going live.
 // -----------------------------------------------------------------------------
 
-export const DEBUG = true;
+export const DEBUG = false;
 
 // Known placeholder values shipped in .env.example. If a real .env still holds
 // one of these, the credential was never filled in.
