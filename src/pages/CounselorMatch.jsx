@@ -5,6 +5,7 @@ import { ChevronLeft, Star, Check } from 'lucide-react';
 import Button from '../components/Button';
 import Card from '../components/Card';
 import { useApp } from '../context/AppContext';
+import { ddlog, maskUrl, logRequestError } from '../lib/envDebug';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
@@ -44,7 +45,8 @@ export default function CounselorMatch() {
 
     try {
       if (API_BASE && !API_BASE.includes('your_webhook_id_here')) {
-        await axios.post(API_BASE, {
+        ddlog('CounselorMatch webhook: POST', { url: maskUrl(API_BASE) });
+        const res = await axios.post(API_BASE, {
           counselorId: counselor.id,
           counselorName: counselor.name,
           slot: selectedTimeSlot,
@@ -53,13 +55,18 @@ export default function CounselorMatch() {
           email,
           userName: user?.name ?? null,
         });
+        ddlog('CounselorMatch webhook: OK', { url: maskUrl(API_BASE), status: res?.status });
       } else {
+        ddlog('CounselorMatch webhook: SKIPPED (API base missing or placeholder) — using demo delay', {
+          url: maskUrl(API_BASE),
+        });
         await new Promise((r) => setTimeout(r, 1200));
       }
       confirmBooking();
       showToast('Session booked!', 'success');
       navigate('/booking-confirmed');
     } catch (e) {
+      logRequestError('CounselorMatch webhook', API_BASE, e);
       console.error(e);
       showToast('Booking failed. Please try again.', 'error');
     } finally {

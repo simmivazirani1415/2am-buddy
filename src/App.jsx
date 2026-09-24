@@ -5,6 +5,10 @@ import Toast from './components/Toast';
 import AppHeader from './components/AppHeader';
 import DebugPanel from './components/DebugPanel';
 import { dlog } from './lib/debugLog';
+import { runEnvDiagnostics } from './lib/envDebug';
+
+// [2am-debug] Full env diagnostics + SUMMARY line, emitted once at app load.
+runEnvDiagnostics('App module load');
 
 dlog('boot', 'App module loaded', {
   hasPublicKey:

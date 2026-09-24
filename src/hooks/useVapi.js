@@ -12,6 +12,7 @@ const Vapi =
   VapiNS;
 import { useApp } from '../context/AppContext';
 import { dlog } from '../lib/debugLog';
+import { ddlog, analyzeEnvVar, appConsidersMissing } from '../lib/envDebug';
 
 const PUBLIC_KEY = import.meta.env.VITE_VAPI_PUBLIC_KEY;
 const DEFAULT_ASSISTANT_ID = import.meta.env.VITE_VAPI_ASSISTANT_ID;
@@ -37,11 +38,21 @@ function isMissing(v) {
 function getClient() {
   if (sharedClient) return sharedClient;
   if (isMissing(PUBLIC_KEY)) {
+    const app = appConsidersMissing('VITE_VAPI_PUBLIC_KEY');
+    ddlog('getClient: NOT constructing — app isMissing(PUBLIC_KEY) is true.', {
+      appMissingCondition: app.condition,
+      analysis: analyzeEnvVar('VITE_VAPI_PUBLIC_KEY'),
+    });
     console.warn('[VAPI] VITE_VAPI_PUBLIC_KEY missing — cannot construct client');
     dlog('vapi', 'VITE_VAPI_PUBLIC_KEY missing — demo mode');
     return null;
   }
   try {
+    ddlog('getClient: constructing Vapi client', {
+      resolvedVapiType: typeof Vapi,
+      resolvedVapiName: Vapi?.name,
+      publicKeyPreview: maskId(PUBLIC_KEY),
+    });
     console.log('[VAPI] Constructing with publicKey:', maskId(PUBLIC_KEY));
     dlog('vapi', 'Constructing Vapi client', {
       publicKey: maskId(PUBLIC_KEY),
@@ -55,7 +66,13 @@ function getClient() {
       isFunction: typeof Vapi === 'function',
     });
     dlog('vapi', 'Vapi client constructed');
+    ddlog('getClient: Vapi client constructed OK');
   } catch (e) {
+    ddlog('getClient: Vapi constructor THREW', {
+      name: e?.name,
+      message: e?.message,
+      stack: e?.stack?.split('\n').slice(0, 3).join(' | '),
+    });
     console.error('[VAPI] constructor threw:', e);
     dlog('vapi', 'Vapi constructor threw', { error: e?.message });
     sharedClient = null;
@@ -65,21 +82,44 @@ function getClient() {
 
 async function ensureMicPermission() {
   if (!navigator?.mediaDevices?.getUserMedia) {
+    ddlog('mic: navigator.mediaDevices.getUserMedia UNAVAILABLE (insecure context / old browser?)', {
+      isSecureContext: typeof isSecureContext !== 'undefined' ? isSecureContext : 'n/a',
+      protocol: typeof location !== 'undefined' ? location.protocol : 'n/a',
+    });
     dlog('mic', 'navigator.mediaDevices.getUserMedia unavailable');
     return false;
   }
   try {
     if (navigator.permissions?.query) {
       const status = await navigator.permissions.query({ name: 'microphone' });
+      ddlog('mic: permissions.query("microphone") state =', status.state);
       dlog('mic', 'permissions.query', { state: status.state });
       if (status.state === 'granted') return true;
+    } else {
+      ddlog('mic: navigator.permissions.query unavailable — will prompt via getUserMedia');
     }
+    ddlog('mic: requesting getUserMedia({audio:true})…');
     dlog('mic', 'Requesting getUserMedia({audio:true})');
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     stream.getTracks().forEach((t) => t.stop());
+    ddlog('mic: getUserMedia GRANTED');
     dlog('mic', 'getUserMedia granted');
     return true;
   } catch (e) {
+    // e.name is the actionable bit: NotAllowedError (blocked/denied),
+    // NotFoundError (no mic), NotReadableError (device busy), etc.
+    ddlog('mic: getUserMedia FAILED', {
+      name: e?.name,
+      message: e?.message,
+      hint:
+        e?.name === 'NotAllowedError'
+          ? 'user denied or browser policy blocked mic'
+          : e?.name === 'NotFoundError'
+          ? 'no microphone device found'
+          : e?.name === 'NotReadableError'
+          ? 'mic is in use by another app'
+          : 'see error name above',
+    });
     dlog('mic', 'getUserMedia denied/failed', {
       name: e?.name,
       message: e?.message,
@@ -115,6 +155,7 @@ export default function useVapi() {
     dlog('vapi', 'Binding event listeners');
 
     const onStart = (payload) => {
+      ddlog('vapi event: call-start');
       console.log('[VAPI] event: call-start', payload);
       dlog('vapi:event', 'call-start', payload);
       setCallStatus('connected');
@@ -122,6 +163,7 @@ export default function useVapi() {
       navigate('/voice');
     };
     const onEnd = (payload) => {
+      ddlog('vapi event: call-end', { endedReason: payload?.endedReason ?? payload?.reason });
       console.log('[VAPI] event: call-end', payload);
       dlog('vapi:event', 'call-end', payload);
       setCallStatus('idle');
@@ -148,6 +190,19 @@ export default function useVapi() {
       }
     };
     const onError = (err) => {
+      // Full error object — status code + message are the actionable bits.
+      // Vapi surfaces HTTP details on various shapes depending on failure stage.
+      ddlog('vapi event: ERROR', {
+        name: err?.name,
+        message: err?.message,
+        type: err?.type,
+        stage: err?.stage,
+        statusCode:
+          err?.status ?? err?.statusCode ?? err?.response?.status ?? err?.error?.status,
+        responseBody: err?.response?.data ?? err?.error?.message ?? err?.errorMsg,
+        raw: typeof err === 'string' ? err : undefined,
+        full: err,
+      });
       console.error('[VAPI] event: error', err);
       dlog('vapi:event', 'error', {
         message: err?.message,
@@ -160,10 +215,12 @@ export default function useVapi() {
       showToast('Connection issue. Check debug panel.', 'error');
     };
     const onSpeechStart = (payload) => {
+      ddlog('vapi event: speech-start (assistant speaking)');
       console.log('[VAPI] event: speech-start', payload);
       dlog('vapi:event', 'speech-start (assistant speaking)', payload);
     };
     const onSpeechEnd = (payload) => {
+      ddlog('vapi event: speech-end (assistant stopped)');
       console.log('[VAPI] event: speech-end', payload);
       dlog('vapi:event', 'speech-end (assistant stopped)', payload);
     };
@@ -213,8 +270,26 @@ export default function useVapi() {
       setCallStatus('connecting');
       setGlobalCallStatus('connecting');
 
+      // [2am-debug] Snapshot exactly what the guards below are about to evaluate.
+      ddlog('startCall: evaluating env guards', {
+        publicKey: {
+          isMissing: isMissing(PUBLIC_KEY),
+          appCondition: appConsidersMissing('VITE_VAPI_PUBLIC_KEY').condition ?? '(passes)',
+          analysis: analyzeEnvVar('VITE_VAPI_PUBLIC_KEY'),
+        },
+        assistantId: {
+          isMissing: isMissing(assistantId),
+          usingDefaultFromEnv: assistantId === DEFAULT_ASSISTANT_ID,
+          appCondition: appConsidersMissing('VITE_VAPI_ASSISTANT_ID').condition ?? '(passes)',
+          analysis: analyzeEnvVar('VITE_VAPI_ASSISTANT_ID'),
+        },
+      });
+
       // Env-var guard with visible feedback
       if (isMissing(PUBLIC_KEY)) {
+        ddlog('startCall: ABORT — isMissing(VITE_VAPI_PUBLIC_KEY) returned true.', {
+          triggeredBy: appConsidersMissing('VITE_VAPI_PUBLIC_KEY').condition,
+        });
         console.error('[VAPI] Missing env var: VITE_VAPI_PUBLIC_KEY');
         dlog('vapi', 'Missing env var', { variable: 'VITE_VAPI_PUBLIC_KEY' });
         showToast('Missing env var: VITE_VAPI_PUBLIC_KEY', 'error');
@@ -223,6 +298,9 @@ export default function useVapi() {
         return;
       }
       if (isMissing(assistantId)) {
+        ddlog('startCall: ABORT — isMissing(assistantId) returned true.', {
+          triggeredBy: appConsidersMissing('VITE_VAPI_ASSISTANT_ID').condition,
+        });
         console.error('[VAPI] Missing env var: VITE_VAPI_ASSISTANT_ID');
         dlog('vapi', 'Missing env var', { variable: 'VITE_VAPI_ASSISTANT_ID' });
         showToast('Missing env var: VITE_VAPI_ASSISTANT_ID', 'error');
@@ -260,15 +338,24 @@ export default function useVapi() {
 
       // EXACT line requested:
       console.log('Calling vapi.start with:', assistantId);
+      ddlog('startCall: calling client.start()', { assistantId: maskId(assistantId) });
       dlog('vapi', 'Calling client.start()', { assistantId: maskId(assistantId) });
       try {
         const res = await client.start(assistantId);
+        ddlog('startCall: client.start() RESOLVED', { hasResult: !!res, resultType: typeof res });
         console.log('[VAPI] start resolved', res);
         dlog('vapi', 'client.start() resolved', {
           hasResult: !!res,
           resultType: typeof res,
         });
       } catch (err) {
+        ddlog('startCall: client.start() THREW', {
+          name: err?.name,
+          message: err?.message,
+          statusCode:
+            err?.status ?? err?.statusCode ?? err?.response?.status,
+          responseBody: err?.response?.data ?? err?.error?.message,
+        });
         // EXACT line requested:
         console.error('vapi.start failed:', err);
         dlog('vapi', 'client.start() threw', {

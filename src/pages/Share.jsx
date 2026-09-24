@@ -6,6 +6,7 @@ import Button from '../components/Button';
 import Card from '../components/Card';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useApp } from '../context/AppContext';
+import { ddlog, maskUrl, logRequestError } from '../lib/envDebug';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
@@ -80,14 +81,20 @@ export default function Share() {
 
     try {
       if (API_BASE && !API_BASE.includes('your_webhook_id_here')) {
-        await axios.post(API_BASE, payload);
+        ddlog('Share webhook: POST', { url: maskUrl(API_BASE) });
+        const res = await axios.post(API_BASE, payload);
+        ddlog('Share webhook: OK', { url: maskUrl(API_BASE), status: res?.status });
       } else {
+        ddlog('Share webhook: SKIPPED (API base missing or placeholder) — using demo delay', {
+          url: maskUrl(API_BASE),
+        });
         await new Promise((r) => setTimeout(r, 1000));
       }
       confirmShare();
       setStatus('sent');
       showToast('Shared with your counselor.', 'success');
     } catch (e) {
+      logRequestError('Share webhook', API_BASE, e);
       console.error(e);
       setErrorMsg(e?.message ?? 'Could not send');
       setStatus('error');
